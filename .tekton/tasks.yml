@@ -1,0 +1,119 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: cleanup
+spec:
+  workspaces:
+    - name: output
+  steps:
+    - name: cleanup
+      image: alpine:3.18
+      script: |
+        #!/bin/sh
+        echo "🧹 Cleaning workspace..."
+        rm -rf $(workspaces.output.path)/*
+        echo "✅ Cleanup complete."
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+spec:
+  workspaces:
+    - name: output
+  params:
+    - name: url
+      type: string
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        #!/bin/sh
+        echo "📦 Cloning repo..."
+        git clone $(params.url) $(workspaces.output.path)/source
+        echo "✅ Clone complete."
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: flake8
+spec:
+  workspaces:
+    - name: output
+  steps:
+    - name: lint
+      image: python:3.9
+      workingDir: $(workspaces.output.path)/source
+      script: |
+        #!/bin/sh
+        echo "🧪 Installing flake8..."
+        pip install flake8
+        echo "🔍 Running flake8 lint..."
+        flake8 . || echo "⚠️ Lint warnings ignored."
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: nose
+spec:
+  workspaces:
+    - name: output
+  steps:
+    - name: test
+      image: python:3.9
+      workingDir: $(workspaces.output.path)/source
+      script: |
+        #!/bin/sh
+        echo "🧪 Installing dependencies..."
+        pip install -r requirements.txt
+        echo "🧩 Running nose tests..."
+        nosetests --with-coverage --cover-package=service || exit 1
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build
+spec:
+  workspaces:
+    - name: output
+  params:
+    - name: image
+      type: string
+  steps:
+    - name: buildah
+      image: quay.io/buildah/stable:v1.35
+      securityContext:
+        privileged: true
+      workingDir: $(workspaces.output.path)/source
+      env:
+        - name: STORAGE_DRIVER
+          value: vfs
+      script: |
+        #!/bin/sh
+        echo "🏗️ Building image $(params.image)"
+        buildah bud --storage-driver=vfs -t $(params.image) .
+        echo "✅ Build completed successfully."
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: openshift-client
+spec:
+  workspaces:
+    - name: output
+  params:
+    - name: image
+      type: string
+  steps:
+    - name: deploy
+      image: quay.io/openshift/origin-cli:latest
+      script: |
+        #!/bin/sh
+        echo "🚀 Deploying image $(params.image)"
+        oc new-app $(params.image) || oc rollout restart dc/$(basename $(params.image))
+        echo "✅ Deployment done."
